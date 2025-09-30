@@ -92,9 +92,6 @@ static void pipecat_on_icecandidate_task(char *description, void *user_data) {
 void pipecat_init_webrtc() {
   PeerConfiguration peer_connection_config = {
       .ice_servers = {
-        // { .urls = "turn:turn.cloudflare.com:3478",
-        //   .username = "g0d469a73c42effe51f1a50e85148730acdc2a38244472ab2b99bb556b139cc2",
-        //   .credential = "ff4634c0424b1698e0313da9a3cc04ba4ed3c7847a6863692f10b760f8aad9ca"},
         { .urls = "stun:stun.l.google.com:19302", .username = NULL, .credential = NULL },
       },
       .audio_codec = CODEC_OPUS,
