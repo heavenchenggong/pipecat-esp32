@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - main
       - ci/*
   workflow_dispatch:
 
@@ -18,7 +19,7 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Build firmware (CoreS3) with ESP-IDF Docker
+      - name: Build firmware (CoreS3) with ESP-IDF v5.5.2
         run: |
           set -euo pipefail
           docker run --rm -v "$PWD":/project -w /project/esp32-m5stack-cores3 -u 0 \
@@ -26,8 +27,8 @@ jobs:
             -e WIFI_SSID="${{ secrets.WIFI_SSID }}" \
             -e WIFI_PASSWORD="${{ secrets.WIFI_PASSWORD }}" \
             -e PIPECAT_SMALLWEBRTC_URL="${{ secrets.PIPECAT_SMALLWEBRTC_URL }}" \
-            espressif/idf:latest \
-            /bin/bash -c 'idf.py --preview set-target esp32s3 && idf.py build && cd build && esptool.py --chip esp32s3 merge_bin -o merged-binary.bin --flash_mode dio --flash_size 16MB --fill-flash-size 16MB 0x0 bootloader/bootloader.bin 0x10000 src.bin 0x8000 partition_table/partition-table.bin'
+            espressif/idf:v5.5.2 \
+            /bin/bash -c 'git config --global --add safe.directory "*" && idf.py --preview set-target esp32s3 && idf.py build && cd build && esptool.py --chip esp32s3 merge_bin -o merged-binary.bin --flash_mode dio --flash_size 16MB --fill-flash-size 16MB 0x0 bootloader/bootloader.bin 0x10000 src.bin 0x8000 partition_table/partition-table.bin'
 
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
