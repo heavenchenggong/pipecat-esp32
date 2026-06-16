@@ -159,6 +159,13 @@ static bool init_servo_power(void) {
 // Note: SCS0009 expects small time values (~30ms) per step + speed parameter.
 // time too large or speed=0 with non-zero time causes the servo to ignore the move.
 // stackchan-mcp uses time=30ms speed=0 for smooth interpolation across many writes.
+//
+// CRITICAL: SCS0009 sends a 6-byte ACK packet after every WRITE. If we don't
+// drain the ACK before the next WRITE, the bus state goes wrong and all
+// subsequent WRITEs are silently dropped ("starts moving once then never
+// moves again" — known bug, see stackchan-mcp comment about Level=0). Also
+// SCS0009 uses half-duplex: TX and RX share one wire, so we MUST flush RX
+// after every send. uart_flush is the simplest robust approach here.
 static void write_pos(uint8_t id, uint16_t position, uint16_t time_ms, uint16_t speed) {
     if (!servo_initialized) return;
 
@@ -182,6 +189,13 @@ static void write_pos(uint8_t id, uint16_t position, uint16_t time_ms, uint16_t 
 
     uart_write_bytes(SERVO_UART, (const char*)buf, 13);
     uart_wait_tx_done(SERVO_UART, pdMS_TO_TICKS(100));
+
+    // Drain ACK reply (6 bytes: 0xFF 0xFF ID LEN ERR CHK). Without this,
+    // every subsequent WritePos is silently dropped — the SCS0009 known
+    // "first move OK, then never moves again" symptom. We don't actually
+    // care about the ACK contents; just need to clear the RX buffer.
+    uint8_t ack[16];
+    uart_read_bytes(SERVO_UART, ack, sizeof(ack), pdMS_TO_TICKS(15));
 }
 
 // Calibration sweep: slowly walk yaw 0..1023 and pitch 0..1023 so user
@@ -252,9 +266,9 @@ void pipecat_servo_init(void) {
     ESP_LOGI(TAG, "Servo UART %d ready (TX=%d RX=%d %d bps)",
              SERVO_UART, SERVO_TX_PIN, SERVO_RX_PIN, SERVO_BAUDRATE);
 
-    // Calibration mode: slowly sweep so user can find the FORWARD raw positions
-    vTaskDelay(pdMS_TO_TICKS(500));
-    pipecat_servo_calibration_sweep();
+    // Small delay to let bus settle, then center to known good pose
+    vTaskDelay(pdMS_TO_TICKS(100));
+    pipecat_servo_center();
 }
 
 void pipecat_servo_move(int pan_deg, int tilt_deg) {
