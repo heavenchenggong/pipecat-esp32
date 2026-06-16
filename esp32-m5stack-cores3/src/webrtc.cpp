@@ -25,9 +25,9 @@ void pipecat_send_audio_task(void *user_data) {
 
 static void pipecat_ondatachannel_onmessage_task(char *msg, size_t len,
                                                  void *userdata, uint16_t sid) {
-#ifdef LOG_DATACHANNEL_MESSAGES
-  ESP_LOGI(LOG_TAG, "DataChannel Message: %s", msg);
-#endif
+  // DEBUG: always log incoming data channel messages so we can see if
+  // server-message is even reaching the device.
+  ESP_LOGI(LOG_TAG, "DataChannel RX: %s", msg);
   pipecat_rtvi_handle_message(msg);
 }
 
