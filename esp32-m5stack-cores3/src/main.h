@@ -29,6 +29,7 @@ typedef struct {
   void (*on_bot_started_speaking)();
   void (*on_bot_stopped_speaking)();
   void (*on_bot_tts_text)(const char *text);
+  void (*on_app_message)(const char *json);  // 自定义 app message（设备控制命令）
 } rtvi_callbacks_t;
 
 extern rtvi_callbacks_t pipecat_rtvi_callbacks;

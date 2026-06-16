@@ -93,6 +93,20 @@ static void rtvi_handle_message(const rtvi_msg_t *msg) {
       rtvi_callbacks->on_bot_tts_text(j_text->valuestring);
       break;
     }
+    case hash("server-message"): {
+      // 自定义服务端消息：pipecat tool → ESP32 设备控制命令
+      // 期望 payload: {"type":"server-message", "data":{"action":"nod"}}
+      // 或:          {"type":"server-message", "data":{"action":"move_head","pan":-30,"tilt":0}}
+      cJSON *j_data = cJSON_GetObjectItem(msg->msg, "data");
+      if (j_data != NULL && rtvi_callbacks->on_app_message != NULL) {
+        char *data_str = cJSON_PrintUnformatted(j_data);
+        if (data_str) {
+          rtvi_callbacks->on_app_message(data_str);
+          cJSON_free(data_str);
+        }
+      }
+      break;
+    }
     default:
       break;
   }

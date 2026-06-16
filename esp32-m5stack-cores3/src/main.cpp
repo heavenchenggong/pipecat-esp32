@@ -1,4 +1,5 @@
 #include "main.h"
+#include "servo.h"
 
 #include <esp_event.h>
 #include <esp_log.h>
@@ -29,6 +30,7 @@ extern "C" void app_main(void) {
   pipecat_init_audio_capture();
   pipecat_init_audio_decoder();
   pipecat_init_wifi();
+  pipecat_servo_init();  // SCS0009 舵机：UART1, GPIO 6 TX / GPIO 7 RX
   pipecat_init_webrtc();
 
   while (1) {
