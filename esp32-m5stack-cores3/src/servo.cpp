@@ -156,6 +156,9 @@ static bool init_servo_power(void) {
 }
 
 // Send "WRITE goal position" command to one servo
+// Note: SCS0009 expects small time values (~30ms) per step + speed parameter.
+// time too large or speed=0 with non-zero time causes the servo to ignore the move.
+// stackchan-mcp uses time=30ms speed=0 for smooth interpolation across many writes.
 static void write_pos(uint8_t id, uint16_t position, uint16_t time_ms, uint16_t speed) {
     if (!servo_initialized) return;
 
@@ -228,11 +231,13 @@ void pipecat_servo_init(void) {
 
 void pipecat_servo_move(int pan_deg, int tilt_deg) {
     int yaw_ticks   = deg_to_ticks_yaw(pan_deg);
-    int pitch_ticks = deg_to_ticks_pitch(-tilt_deg);  // mechanical convention
+    // Stack-chan: forward-facing pitch is 45°. tilt=0 means look forward,
+    // tilt>0 means look up (subtract from 45°).
+    int pitch_ticks = deg_to_ticks_pitch(45 - tilt_deg);
     ESP_LOGI(TAG, "move pan=%d tilt=%d -> yaw_ticks=%d pitch_ticks=%d",
              pan_deg, tilt_deg, yaw_ticks, pitch_ticks);
-    write_pos(SERVO_YAW_ID, yaw_ticks, 500, 0);
-    write_pos(SERVO_PITCH_ID, pitch_ticks, 500, 0);
+    write_pos(SERVO_YAW_ID, yaw_ticks, 0, 300);
+    write_pos(SERVO_PITCH_ID, pitch_ticks, 0, 300);
 }
 
 void pipecat_servo_center(void) {
@@ -243,32 +248,38 @@ void pipecat_servo_center(void) {
     int yaw_pos = deg_to_ticks_yaw(0);
     int pitch_pos = deg_to_ticks_pitch(45);
     ESP_LOGI(TAG, "center (yaw=0deg=%d pitch=45deg=%d)", yaw_pos, pitch_pos);
-    write_pos(SERVO_YAW_ID, yaw_pos, 800, 0);
-    write_pos(SERVO_PITCH_ID, pitch_pos, 800, 0);
+    // SCS0009: time=0 + non-zero speed = constant-speed move at 'speed' ticks/s.
+    // Large time values can be ignored or misinterpreted on some firmware revs;
+    // stackchan-mcp uses time=30 with high-frequency interpolation. Here we
+    // use simple speed-controlled moves to avoid the time-large bug.
+    write_pos(SERVO_YAW_ID, yaw_pos, 0, 300);
+    write_pos(SERVO_PITCH_ID, pitch_pos, 0, 300);
 }
 
 void pipecat_servo_nod(void) {
     ESP_LOGI(TAG, "nod");
-    int down = deg_to_ticks_pitch(20);   // tilt down (mechanical)
-    int up   = deg_to_ticks_pitch(-10);  // tilt up
-    write_pos(SERVO_PITCH_ID, down, 250, 0);
+    int neutral = deg_to_ticks_pitch(45);  // forward
+    int down = deg_to_ticks_pitch(60);     // 15° down from forward
+    int up   = deg_to_ticks_pitch(30);     // 15° up from forward
+    write_pos(SERVO_PITCH_ID, down, 0, 600);
     vTaskDelay(pdMS_TO_TICKS(280));
-    write_pos(SERVO_PITCH_ID, up, 250, 0);
+    write_pos(SERVO_PITCH_ID, up, 0, 600);
     vTaskDelay(pdMS_TO_TICKS(280));
-    write_pos(SERVO_PITCH_ID, down, 250, 0);
+    write_pos(SERVO_PITCH_ID, down, 0, 600);
     vTaskDelay(pdMS_TO_TICKS(280));
-    write_pos(SERVO_PITCH_ID, PITCH_CENTER_POS, 350, 0);
+    write_pos(SERVO_PITCH_ID, neutral, 0, 400);
 }
 
 void pipecat_servo_shake(void) {
     ESP_LOGI(TAG, "shake");
+    int neutral = deg_to_ticks_yaw(0);
     int left  = deg_to_ticks_yaw(-30);
     int right = deg_to_ticks_yaw(30);
-    write_pos(SERVO_YAW_ID, left, 250, 0);
+    write_pos(SERVO_YAW_ID, left, 0, 600);
     vTaskDelay(pdMS_TO_TICKS(280));
-    write_pos(SERVO_YAW_ID, right, 250, 0);
+    write_pos(SERVO_YAW_ID, right, 0, 600);
     vTaskDelay(pdMS_TO_TICKS(280));
-    write_pos(SERVO_YAW_ID, left, 250, 0);
+    write_pos(SERVO_YAW_ID, left, 0, 600);
     vTaskDelay(pdMS_TO_TICKS(280));
-    write_pos(SERVO_YAW_ID, YAW_CENTER_POS, 350, 0);
+    write_pos(SERVO_YAW_ID, neutral, 0, 400);
 }
