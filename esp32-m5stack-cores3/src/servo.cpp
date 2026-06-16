@@ -236,9 +236,15 @@ void pipecat_servo_move(int pan_deg, int tilt_deg) {
 }
 
 void pipecat_servo_center(void) {
-    ESP_LOGI(TAG, "center (yaw=%d pitch=%d)", YAW_CENTER_POS, PITCH_CENTER_POS);
-    write_pos(SERVO_YAW_ID, YAW_CENTER_POS, 500, 0);
-    write_pos(SERVO_PITCH_ID, PITCH_CENTER_POS, 500, 0);
+    // Stack-chan physical "looking forward" pose:
+    //   yaw = 0° (face the user directly)
+    //   pitch = 45° (raises the face up so the screen points forward, not at the floor)
+    // This matches stackchan-mcp's BOOT_INIT_YAW_DEG=0 / BOOT_INIT_PITCH_DEG=45.
+    int yaw_pos = deg_to_ticks_yaw(0);
+    int pitch_pos = deg_to_ticks_pitch(45);
+    ESP_LOGI(TAG, "center (yaw=0deg=%d pitch=45deg=%d)", yaw_pos, pitch_pos);
+    write_pos(SERVO_YAW_ID, yaw_pos, 800, 0);
+    write_pos(SERVO_PITCH_ID, pitch_pos, 800, 0);
 }
 
 void pipecat_servo_nod(void) {
