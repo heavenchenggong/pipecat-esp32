@@ -109,6 +109,12 @@ void pipecat_servo_init(void) {
     // Small delay to let bus settle, then center
     vTaskDelay(pdMS_TO_TICKS(100));
     pipecat_servo_center();
+
+    // Boot 自检：等 1 秒后 nod 一下，物理上能看到点头说明 servo 物理通
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    ESP_LOGI(TAG, "BOOT SELF-TEST: nod sequence");
+    pipecat_servo_nod();
+    ESP_LOGI(TAG, "BOOT SELF-TEST: done");
 }
 
 void pipecat_servo_move(int pan_deg, int tilt_deg) {
