@@ -50,17 +50,30 @@
 #define I2C_FREQ_HZ         100000  // 100 kHz (PY32 reliability — see stackchan-mcp notes)
 
 // SCS0009 ticks per degree (10-bit / ~300°)
-static const float TICKS_PER_DEG = 1024.0f / 300.0f;
-static const int CENTER_POS = 512;
+// Stack-chan calibration values — physical mounting offset on the SCS0009
+// gear differs from the protocol "512 = center". stackchan-mcp ships these
+// values for the same hardware; we adopt them directly.
+static const int YAW_CENTER_POS   = 460;   // raw position for yaw 0°
+static const int PITCH_CENTER_POS = 620;   // raw position for pitch 0°
+static const float TICKS_PER_DEG  = 16.0f / 5.0f;  // = 3.2 ticks per degree
 
 static bool servo_initialized = false;
 static i2c_master_bus_handle_t i2c_bus = NULL;
 static i2c_master_dev_handle_t py32_dev = NULL;
 
-static int deg_to_ticks(int deg, int axis_min, int axis_max) {
-    if (deg < axis_min) deg = axis_min;
-    if (deg > axis_max) deg = axis_max;
-    return CENTER_POS + (int)(deg * TICKS_PER_DEG);
+// Convert degrees to raw servo position for a specific axis.
+// Each axis has its own physical center (mounting offset); see
+// YAW_CENTER_POS / PITCH_CENTER_POS above.
+static int deg_to_ticks_yaw(int deg) {
+    if (deg < -60) deg = -60;
+    if (deg > 60) deg = 60;
+    return YAW_CENTER_POS + (int)(deg * TICKS_PER_DEG);
+}
+
+static int deg_to_ticks_pitch(int deg) {
+    if (deg < -30) deg = -30;
+    if (deg > 30) deg = 30;
+    return PITCH_CENTER_POS + (int)(deg * TICKS_PER_DEG);
 }
 
 // I2C helper: write one byte to a PY32 register (with light retry)
@@ -208,20 +221,14 @@ void pipecat_servo_init(void) {
     ESP_LOGI(TAG, "Servo UART %d ready (TX=%d RX=%d %d bps)",
              SERVO_UART, SERVO_TX_PIN, SERVO_RX_PIN, SERVO_BAUDRATE);
 
-    // Small delay to let bus settle, then center
+    // Small delay to let bus settle, then center to known good pose
     vTaskDelay(pdMS_TO_TICKS(100));
     pipecat_servo_center();
-
-    // Boot 自检：等 1 秒后 nod 一下
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    ESP_LOGI(TAG, "BOOT SELF-TEST: nod sequence");
-    pipecat_servo_nod();
-    ESP_LOGI(TAG, "BOOT SELF-TEST: done");
 }
 
 void pipecat_servo_move(int pan_deg, int tilt_deg) {
-    int yaw_ticks   = deg_to_ticks(pan_deg, -60, 60);
-    int pitch_ticks = deg_to_ticks(-tilt_deg, -30, 30);  // mechanical convention
+    int yaw_ticks   = deg_to_ticks_yaw(pan_deg);
+    int pitch_ticks = deg_to_ticks_pitch(-tilt_deg);  // mechanical convention
     ESP_LOGI(TAG, "move pan=%d tilt=%d -> yaw_ticks=%d pitch_ticks=%d",
              pan_deg, tilt_deg, yaw_ticks, pitch_ticks);
     write_pos(SERVO_YAW_ID, yaw_ticks, 500, 0);
@@ -229,33 +236,33 @@ void pipecat_servo_move(int pan_deg, int tilt_deg) {
 }
 
 void pipecat_servo_center(void) {
-    ESP_LOGI(TAG, "center");
-    write_pos(SERVO_YAW_ID, CENTER_POS, 500, 0);
-    write_pos(SERVO_PITCH_ID, CENTER_POS, 500, 0);
+    ESP_LOGI(TAG, "center (yaw=%d pitch=%d)", YAW_CENTER_POS, PITCH_CENTER_POS);
+    write_pos(SERVO_YAW_ID, YAW_CENTER_POS, 500, 0);
+    write_pos(SERVO_PITCH_ID, PITCH_CENTER_POS, 500, 0);
 }
 
 void pipecat_servo_nod(void) {
     ESP_LOGI(TAG, "nod");
-    int down = deg_to_ticks(20, -30, 30);  // tilt down
-    int up   = deg_to_ticks(-10, -30, 30); // tilt up
+    int down = deg_to_ticks_pitch(20);   // tilt down (mechanical)
+    int up   = deg_to_ticks_pitch(-10);  // tilt up
     write_pos(SERVO_PITCH_ID, down, 250, 0);
     vTaskDelay(pdMS_TO_TICKS(280));
     write_pos(SERVO_PITCH_ID, up, 250, 0);
     vTaskDelay(pdMS_TO_TICKS(280));
     write_pos(SERVO_PITCH_ID, down, 250, 0);
     vTaskDelay(pdMS_TO_TICKS(280));
-    write_pos(SERVO_PITCH_ID, CENTER_POS, 350, 0);
+    write_pos(SERVO_PITCH_ID, PITCH_CENTER_POS, 350, 0);
 }
 
 void pipecat_servo_shake(void) {
     ESP_LOGI(TAG, "shake");
-    int left  = deg_to_ticks(-30, -60, 60);
-    int right = deg_to_ticks(30, -60, 60);
+    int left  = deg_to_ticks_yaw(-30);
+    int right = deg_to_ticks_yaw(30);
     write_pos(SERVO_YAW_ID, left, 250, 0);
     vTaskDelay(pdMS_TO_TICKS(280));
     write_pos(SERVO_YAW_ID, right, 250, 0);
     vTaskDelay(pdMS_TO_TICKS(280));
     write_pos(SERVO_YAW_ID, left, 250, 0);
     vTaskDelay(pdMS_TO_TICKS(280));
-    write_pos(SERVO_YAW_ID, CENTER_POS, 350, 0);
+    write_pos(SERVO_YAW_ID, YAW_CENTER_POS, 350, 0);
 }
