@@ -184,6 +184,34 @@ static void write_pos(uint8_t id, uint16_t position, uint16_t time_ms, uint16_t 
     uart_wait_tx_done(SERVO_UART, pdMS_TO_TICKS(100));
 }
 
+// Calibration sweep: slowly walk yaw 0..1023 and pitch 0..1023 so user
+// can identify the raw position where the head physically faces forward.
+// Watch the serial log: each position is printed for 1.5s before moving on.
+void pipecat_servo_calibration_sweep(void) {
+    ESP_LOGI(TAG, "=== CALIBRATION SWEEP START ===");
+    ESP_LOGI(TAG, "Moving YAW through full range. Note position where head faces FORWARD.");
+
+    // Sweep yaw across 8 positions: 100, 200, 300, ... 800, 900
+    int yaw_positions[] = {100, 200, 300, 400, 500, 600, 700, 800, 900};
+    for (int i = 0; i < 9; i++) {
+        ESP_LOGI(TAG, ">>> YAW = %d", yaw_positions[i]);
+        write_pos(SERVO_YAW_ID, yaw_positions[i], 0, 200);
+        vTaskDelay(pdMS_TO_TICKS(2500));
+    }
+    write_pos(SERVO_YAW_ID, 460, 0, 200);  // back to nominal center
+    vTaskDelay(pdMS_TO_TICKS(2000));
+
+    ESP_LOGI(TAG, "Moving PITCH. Note position where head faces FORWARD (level).");
+    int pitch_positions[] = {200, 400, 500, 600, 700, 800, 900};
+    for (int i = 0; i < 7; i++) {
+        ESP_LOGI(TAG, ">>> PITCH = %d", pitch_positions[i]);
+        write_pos(SERVO_PITCH_ID, pitch_positions[i], 0, 200);
+        vTaskDelay(pdMS_TO_TICKS(2500));
+    }
+    write_pos(SERVO_PITCH_ID, 620, 0, 200);
+    ESP_LOGI(TAG, "=== CALIBRATION SWEEP DONE ===");
+}
+
 void pipecat_servo_init(void) {
     if (servo_initialized) return;
 
@@ -224,9 +252,9 @@ void pipecat_servo_init(void) {
     ESP_LOGI(TAG, "Servo UART %d ready (TX=%d RX=%d %d bps)",
              SERVO_UART, SERVO_TX_PIN, SERVO_RX_PIN, SERVO_BAUDRATE);
 
-    // Small delay to let bus settle, then center to known good pose
-    vTaskDelay(pdMS_TO_TICKS(100));
-    pipecat_servo_center();
+    // Calibration mode: slowly sweep so user can find the FORWARD raw positions
+    vTaskDelay(pdMS_TO_TICKS(500));
+    pipecat_servo_calibration_sweep();
 }
 
 void pipecat_servo_move(int pan_deg, int tilt_deg) {
