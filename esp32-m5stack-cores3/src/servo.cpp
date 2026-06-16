@@ -176,12 +176,19 @@ static void write_pos(uint8_t id, uint16_t position, uint16_t time_ms, uint16_t 
     buf[3] = 9;  // LEN: 7 params + 2
     buf[4] = CMD_WRITE;
     buf[5] = ADDR_GOAL_POSITION;
-    buf[6] = position & 0xFF;
-    buf[7] = (position >> 8) & 0xFF;
-    buf[8] = time_ms & 0xFF;
-    buf[9] = (time_ms >> 8) & 0xFF;
-    buf[10] = speed & 0xFF;
-    buf[11] = (speed >> 8) & 0xFF;
+    // SCS0009 protocol uses BIG-ENDIAN multi-byte fields (End=1 default).
+    // The Feetech reference driver names the bytes "DataL/DataH" but with
+    // End=1 it actually puts the HIGH byte first. We MUST send high then low.
+    // Sending little-endian instead makes the servo interpret the position
+    // as a completely different value — head spins to a random pose with
+    // no error reported. (This is the cause of the "head goes backward
+    // and screen up" symptom we saw with little-endian.)
+    buf[6] = (position >> 8) & 0xFF;  // position HIGH
+    buf[7] = position & 0xFF;          // position LOW
+    buf[8] = (time_ms >> 8) & 0xFF;    // time HIGH
+    buf[9] = time_ms & 0xFF;            // time LOW
+    buf[10] = (speed >> 8) & 0xFF;     // speed HIGH
+    buf[11] = speed & 0xFF;             // speed LOW
 
     uint16_t sum = 0;
     for (int i = 2; i <= 11; i++) sum += buf[i];
