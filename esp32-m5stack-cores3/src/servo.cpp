@@ -310,13 +310,18 @@ void pipecat_servo_nod(void) {
     int neutral = deg_to_ticks_pitch(45);  // forward
     int down = deg_to_ticks_pitch(60);     // 15° down from forward
     int up   = deg_to_ticks_pitch(30);     // 15° up from forward
+
+    // Need longer delay between SCS0009 commands than the move duration —
+    // otherwise the servo's still mid-move when next WRITE arrives and
+    // the new target sometimes gets ignored.
     write_pos(SERVO_PITCH_ID, down, 0, 600);
-    vTaskDelay(pdMS_TO_TICKS(280));
+    vTaskDelay(pdMS_TO_TICKS(500));
     write_pos(SERVO_PITCH_ID, up, 0, 600);
-    vTaskDelay(pdMS_TO_TICKS(280));
+    vTaskDelay(pdMS_TO_TICKS(500));
     write_pos(SERVO_PITCH_ID, down, 0, 600);
-    vTaskDelay(pdMS_TO_TICKS(280));
+    vTaskDelay(pdMS_TO_TICKS(500));
     write_pos(SERVO_PITCH_ID, neutral, 0, 400);
+    vTaskDelay(pdMS_TO_TICKS(500));
 }
 
 void pipecat_servo_shake(void) {
@@ -325,10 +330,11 @@ void pipecat_servo_shake(void) {
     int left  = deg_to_ticks_yaw(-30);
     int right = deg_to_ticks_yaw(30);
     write_pos(SERVO_YAW_ID, left, 0, 600);
-    vTaskDelay(pdMS_TO_TICKS(280));
+    vTaskDelay(pdMS_TO_TICKS(500));
     write_pos(SERVO_YAW_ID, right, 0, 600);
-    vTaskDelay(pdMS_TO_TICKS(280));
+    vTaskDelay(pdMS_TO_TICKS(500));
     write_pos(SERVO_YAW_ID, left, 0, 600);
-    vTaskDelay(pdMS_TO_TICKS(280));
+    vTaskDelay(pdMS_TO_TICKS(500));
     write_pos(SERVO_YAW_ID, neutral, 0, 400);
+    vTaskDelay(pdMS_TO_TICKS(500));
 }
