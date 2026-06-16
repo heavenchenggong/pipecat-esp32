@@ -1,21 +1,24 @@
 // Minimal SCS0009 servo driver — see servo.h for API.
 //
+// Hardware notes for Stack-chan on M5Stack CoreS3:
+//   - Servos are 5V SCS0009 on UART_NUM_1 (GPIO 6 TX, GPIO 7 RX, 1 Mbps).
+//   - **CRITICAL**: servo power is gated by a PY32 I2C IO Expander
+//     (addr 0x6F on the internal I2C bus, GPIO 11 SCL / 12 SDA).
+//     Pin 0 of the PY32 = VM_EN. It must be set to OUTPUT, pull-up enabled,
+//     and driven HIGH before servos see any voltage. Without this,
+//     UART bytes go nowhere.
+//
 // Protocol summary (Feetech SCS / Waveshare SCS0009):
 //   Frame:  0xFF 0xFF [ID] [LEN] [CMD] [PARAM...] [CHECKSUM]
 //     LEN = (PARAM bytes) + 2
 //     CHECKSUM = ~(ID + LEN + CMD + PARAM_SUM) & 0xFF
-//
-//   CMD 0x03 = WRITE
-//   Goal Position register address = 0x2A (low) / 0x2B (high)
-//   To write "go to position P over time T at speed S":
-//     PARAM = [0x2A, P_low, P_high, T_low, T_high, S_low, S_high]
-//
-//   Position range: 0..1023 (10-bit), 512 = center, 0/1023 = ~±150°
-//   For SCS0009 the working angle is ~300°, so 1° ≈ 3.4 ticks.
+//   CMD 0x03 = WRITE; ADDR 0x2A = Goal Position L
+//   Position 0..1023 (10-bit), 512 = center, ~300° range → 1° ≈ 3.4 ticks.
 
 #include "servo.h"
 #include "esp_log.h"
 #include "driver/uart.h"
+#include "driver/i2c_master.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
@@ -34,11 +37,25 @@
 #define CMD_WRITE           0x03
 #define ADDR_GOAL_POSITION  0x2A
 
+// PY32 I2C IO Expander (controls VM_EN on Stack-chan)
+#define PY32_ADDR           0x6F
+#define PY32_REG_GPIO_M_L   0x03  // Direction low byte (1 = output)
+#define PY32_REG_GPIO_O_L   0x05  // Output level low byte
+#define PY32_REG_GPIO_PU_L  0x09  // Pull-up low byte
+#define PY32_REG_GPIO_PD_L  0x0B  // Pull-down low byte
+#define PY32_VM_EN_PIN      0     // Pin 0 = servo power switch
+
+#define I2C_SCL_PIN         GPIO_NUM_11
+#define I2C_SDA_PIN         GPIO_NUM_12
+#define I2C_FREQ_HZ         100000  // 100 kHz (PY32 reliability — see stackchan-mcp notes)
+
 // SCS0009 ticks per degree (10-bit / ~300°)
 static const float TICKS_PER_DEG = 1024.0f / 300.0f;
 static const int CENTER_POS = 512;
 
 static bool servo_initialized = false;
+static i2c_master_bus_handle_t i2c_bus = NULL;
+static i2c_master_dev_handle_t py32_dev = NULL;
 
 static int deg_to_ticks(int deg, int axis_min, int axis_max) {
     if (deg < axis_min) deg = axis_min;
@@ -46,11 +63,89 @@ static int deg_to_ticks(int deg, int axis_min, int axis_max) {
     return CENTER_POS + (int)(deg * TICKS_PER_DEG);
 }
 
+// I2C helper: write one byte to a PY32 register (with light retry)
+static bool py32_write_reg(uint8_t reg, uint8_t value) {
+    if (!py32_dev) return false;
+    uint8_t buf[2] = {reg, value};
+    for (int attempt = 0; attempt < 3; attempt++) {
+        esp_err_t err = i2c_master_transmit(py32_dev, buf, 2, 100);
+        if (err == ESP_OK) return true;
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    return false;
+}
+
+// Read-modify-write a single bit in a register (used for pin-level config)
+static bool py32_set_bit(uint8_t reg, uint8_t pin, bool level) {
+    if (!py32_dev) return false;
+    uint8_t cur = 0;
+    esp_err_t err = i2c_master_transmit_receive(py32_dev, &reg, 1, &cur, 1, 100);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "py32 read reg 0x%02X failed: %d", reg, err);
+        return false;
+    }
+    if (level) {
+        cur |= (1 << pin);
+    } else {
+        cur &= ~(1 << pin);
+    }
+    return py32_write_reg(reg, cur);
+}
+
+// Initialize PY32 IO Expander and turn on VM_EN to power the servos.
+// This is the missing piece that makes UART servo writes actually do anything.
+static bool init_servo_power(void) {
+    // Internal I2C bus on CoreS3 (controller 1, GPIO 11/12)
+    i2c_master_bus_config_t bus_cfg = {
+        .i2c_port = (i2c_port_t)1,
+        .sda_io_num = I2C_SDA_PIN,
+        .scl_io_num = I2C_SCL_PIN,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .intr_priority = 0,
+        .trans_queue_depth = 0,
+        .flags = { .enable_internal_pullup = 1 },
+    };
+    esp_err_t err = i2c_new_master_bus(&bus_cfg, &i2c_bus);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "i2c_new_master_bus failed: %d", err);
+        return false;
+    }
+
+    // Add PY32 device at 100 kHz (M5 default — PY32 mis-behaves at 400 kHz)
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = PY32_ADDR,
+        .scl_speed_hz = I2C_FREQ_HZ,
+        .scl_wait_us = 0,
+        .flags = { .disable_ack_check = 0 },
+    };
+    err = i2c_master_bus_add_device(i2c_bus, &dev_cfg, &py32_dev);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "py32 add_device failed: %d", err);
+        return false;
+    }
+
+    // Pin 0 = VM_EN: direction=output, pull-up=enabled, output=HIGH
+    bool ok_dir   = py32_set_bit(PY32_REG_GPIO_M_L, PY32_VM_EN_PIN, true);
+    bool ok_pull  = py32_set_bit(PY32_REG_GPIO_PU_L, PY32_VM_EN_PIN, true);
+    bool ok_pd    = py32_set_bit(PY32_REG_GPIO_PD_L, PY32_VM_EN_PIN, false);
+    bool ok_write = py32_set_bit(PY32_REG_GPIO_O_L, PY32_VM_EN_PIN, true);
+
+    if (!ok_dir || !ok_pull || !ok_pd || !ok_write) {
+        ESP_LOGE(TAG, "PY32 VM_EN setup failed (dir=%d pull=%d pd=%d write=%d)",
+                 ok_dir, ok_pull, ok_pd, ok_write);
+        return false;
+    }
+    ESP_LOGI(TAG, "PY32 VM_EN driven HIGH (servo power ON)");
+    vTaskDelay(pdMS_TO_TICKS(200));  // give servos time to boot
+    return true;
+}
+
 // Send "WRITE goal position" command to one servo
 static void write_pos(uint8_t id, uint16_t position, uint16_t time_ms, uint16_t speed) {
     if (!servo_initialized) return;
 
-    // Frame: 0xFF 0xFF [ID] [LEN=9] [CMD=WRITE] [ADDR=0x2A] [P_l P_h T_l T_h S_l S_h] [CHK]
     uint8_t buf[14];
     buf[0] = 0xFF;
     buf[1] = 0xFF;
@@ -76,6 +171,13 @@ static void write_pos(uint8_t id, uint16_t position, uint16_t time_ms, uint16_t 
 void pipecat_servo_init(void) {
     if (servo_initialized) return;
 
+    // Step 1: power up servos via PY32 IO Expander (CRITICAL!)
+    if (!init_servo_power()) {
+        ESP_LOGE(TAG, "servo power init failed — servos will not respond");
+        // continue anyway so UART init still happens (for diagnostics)
+    }
+
+    // Step 2: configure UART
     uart_config_t cfg = {
         .baud_rate = SERVO_BAUDRATE,
         .data_bits = UART_DATA_8_BITS,
@@ -110,7 +212,7 @@ void pipecat_servo_init(void) {
     vTaskDelay(pdMS_TO_TICKS(100));
     pipecat_servo_center();
 
-    // Boot 自检：等 1 秒后 nod 一下，物理上能看到点头说明 servo 物理通
+    // Boot 自检：等 1 秒后 nod 一下
     vTaskDelay(pdMS_TO_TICKS(1000));
     ESP_LOGI(TAG, "BOOT SELF-TEST: nod sequence");
     pipecat_servo_nod();
