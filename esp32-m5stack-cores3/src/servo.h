@@ -16,6 +16,8 @@
 #ifndef PIPECAT_SERVO_H
 #define PIPECAT_SERVO_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
