@@ -4,6 +4,7 @@
 
 #include "main.h"
 #include "servo.h"
+#include "led.h"
 
 static void on_bot_started_speaking() {
   // pipecat_screen_new_log();
@@ -53,6 +54,10 @@ static void on_app_message(const char *json) {
     int pan = (j_pan && cJSON_IsNumber(j_pan)) ? j_pan->valueint : 0;
     int tilt = (j_tilt && cJSON_IsNumber(j_tilt)) ? j_tilt->valueint : 0;
     pipecat_servo_move(pan, tilt);
+  } else if (strcmp(action, "set_led") == 0) {
+    cJSON *j_color = cJSON_GetObjectItem(root, "color");
+    const char *color = (j_color && cJSON_IsString(j_color)) ? j_color->valuestring : "off";
+    pipecat_led_set(color);
   } else {
     ESP_LOGW(LOG_TAG, "unknown action: %s", action);
   }
