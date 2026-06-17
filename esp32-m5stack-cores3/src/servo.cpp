@@ -50,11 +50,13 @@
 #define I2C_FREQ_HZ         100000  // 100 kHz (PY32 reliability — see stackchan-mcp notes)
 
 // SCS0009 ticks per degree (10-bit / ~300°)
-// Stack-chan calibration values — physical mounting offset on the SCS0009
-// gear differs from the protocol "512 = center". stackchan-mcp ships these
-// values for the same hardware; we adopt them directly.
+// Stack-chan physical mounting offset:
+//   yaw=460 / pitch=716 are the raw positions where the head physically faces forward.
+//   (boot self-test confirmed 716 = 物理 forward; the previous code "looked correct"
+//    because deg_to_ticks_pitch(45) clamped to 30 → 620 + 30*3.2 = 716 by accident.)
+// TICKS_PER_DEG = 16/5 from stackchan-mcp.
 static const int YAW_CENTER_POS   = 460;   // raw position for yaw 0°
-static const int PITCH_CENTER_POS = 620;   // raw position for pitch 0°
+static const int PITCH_CENTER_POS = 716;   // raw position for pitch 0° (physical forward)
 static const float TICKS_PER_DEG  = 16.0f / 5.0f;  // = 3.2 ticks per degree
 
 static bool servo_initialized = false;
@@ -194,15 +196,26 @@ static void write_pos(uint8_t id, uint16_t position, uint16_t time_ms, uint16_t 
     for (int i = 2; i <= 11; i++) sum += buf[i];
     buf[12] = (~sum) & 0xFF;
 
-    uart_write_bytes(SERVO_UART, (const char*)buf, 13);
+    int written = uart_write_bytes(SERVO_UART, (const char*)buf, 13);
     uart_wait_tx_done(SERVO_UART, pdMS_TO_TICKS(100));
+
+    // DEBUG: dump TX bytes so we can see exactly what we sent.
+    ESP_LOGI(TAG, "TX[id=%d pos=%d t=%d sp=%d] wrote=%d %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+             id, position, time_ms, speed, written,
+             buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6],
+             buf[7], buf[8], buf[9], buf[10], buf[11], buf[12]);
 
     // Drain ACK reply (6 bytes: 0xFF 0xFF ID LEN ERR CHK). Without this,
     // every subsequent WritePos is silently dropped — the SCS0009 known
-    // "first move OK, then never moves again" symptom. We don't actually
-    // care about the ACK contents; just need to clear the RX buffer.
-    uint8_t ack[16];
-    uart_read_bytes(SERVO_UART, ack, sizeof(ack), pdMS_TO_TICKS(15));
+    // "first move OK, then never moves again" symptom.
+    uint8_t ack[16] = {0};
+    int rx = uart_read_bytes(SERVO_UART, ack, sizeof(ack), pdMS_TO_TICKS(20));
+    if (rx > 0) {
+        ESP_LOGI(TAG, "ACK[%d]: %02X %02X %02X %02X %02X %02X",
+                 rx, ack[0], ack[1], ack[2], ack[3], ack[4], ack[5]);
+    } else {
+        ESP_LOGW(TAG, "ACK: no reply (rx=%d)", rx);
+    }
 }
 
 // Calibration sweep: slowly walk yaw 0..1023 and pitch 0..1023 so user
@@ -280,9 +293,11 @@ void pipecat_servo_init(void) {
 
 void pipecat_servo_move(int pan_deg, int tilt_deg) {
     int yaw_ticks   = deg_to_ticks_yaw(pan_deg);
-    // Stack-chan: forward-facing pitch is 45°. tilt=0 means look forward,
-    // tilt>0 means look up (subtract from 45°).
-    int pitch_ticks = deg_to_ticks_pitch(45 - tilt_deg);
+    // tilt_deg 直接传给 deg_to_ticks_pitch（正=往上看，负=往下看）。
+    // PITCH_CENTER_POS=716 已经是物理"看正前方"，不需要 +45° offset。
+    // 之前 `45 - tilt_deg` 然后 clamp 到 ±30，导致 tilt 永远 clamp 飞，pitch_ticks
+    // 总是 716（跟 boot center 那次的 deg_to_ticks_pitch(45) clamp 后值相同）。
+    int pitch_ticks = deg_to_ticks_pitch(tilt_deg);
     ESP_LOGI(TAG, "move pan=%d tilt=%d -> yaw_ticks=%d pitch_ticks=%d",
              pan_deg, tilt_deg, yaw_ticks, pitch_ticks);
     write_pos(SERVO_YAW_ID, yaw_ticks, 0, 300);
@@ -290,26 +305,21 @@ void pipecat_servo_move(int pan_deg, int tilt_deg) {
 }
 
 void pipecat_servo_center(void) {
-    // Stack-chan physical "looking forward" pose:
-    //   yaw = 0° (face the user directly)
-    //   pitch = 45° (raises the face up so the screen points forward, not at the floor)
-    // This matches stackchan-mcp's BOOT_INIT_YAW_DEG=0 / BOOT_INIT_PITCH_DEG=45.
+    // 物理"看正前方"对应:
+    //   yaw_ticks = YAW_CENTER_POS = 460
+    //   pitch_ticks = PITCH_CENTER_POS = 716
     int yaw_pos = deg_to_ticks_yaw(0);
-    int pitch_pos = deg_to_ticks_pitch(45);
-    ESP_LOGI(TAG, "center (yaw=0deg=%d pitch=45deg=%d)", yaw_pos, pitch_pos);
-    // SCS0009: time=0 + non-zero speed = constant-speed move at 'speed' ticks/s.
-    // Large time values can be ignored or misinterpreted on some firmware revs;
-    // stackchan-mcp uses time=30 with high-frequency interpolation. Here we
-    // use simple speed-controlled moves to avoid the time-large bug.
+    int pitch_pos = deg_to_ticks_pitch(0);
+    ESP_LOGI(TAG, "center (yaw=%d pitch=%d)", yaw_pos, pitch_pos);
     write_pos(SERVO_YAW_ID, yaw_pos, 0, 300);
     write_pos(SERVO_PITCH_ID, pitch_pos, 0, 300);
 }
 
 void pipecat_servo_nod(void) {
     ESP_LOGI(TAG, "nod");
-    int neutral = deg_to_ticks_pitch(45);  // forward
-    int down = deg_to_ticks_pitch(60);     // 15° down from forward
-    int up   = deg_to_ticks_pitch(30);     // 15° up from forward
+    int neutral = deg_to_ticks_pitch(0);   // forward
+    int down = deg_to_ticks_pitch(-15);    // 15° down
+    int up   = deg_to_ticks_pitch(15);     // 15° up
 
     // Need longer delay between SCS0009 commands than the move duration —
     // otherwise the servo's still mid-move when next WRITE arrives and
