@@ -46,12 +46,19 @@
 #define PY32_VM_EN_PIN      0     // Pin 0 = servo power switch
 
 // LED registers (same PY32). LEDs are NOT GPIO-controlled SK6812; they're driven
-// by the PY32 chip itself, exposed via these registers (stackchan-arduino source):
-//   REG_LED_CFG = 0x24  bits[5:0] = count (max 32), bit 6 = refresh trigger
-//   REG_LED_RAM_START = 0x30  16 bytes per LED... no, 2 bytes per LED (RGB565 LE)
-// Stack-chan kit ships with 3 LEDs (cheek-L / cheek-R / center).
+// by the PY32 chip itself (it acts as I2C → WS2812 bridge), with the WS2812
+// data line on PY32 pin 13. Stack-chan kit base has 12 WS2812C LEDs.
+//
+// Init sequence (mandatory; missing any step → silent no-light):
+//   1. Configure pin 13: output direction, pull-up enabled, push-pull drive
+//   2. SetLedCount(12)
+//   3. Write RAM at REG_LED_RAM_START + idx*2 = RGB565 LE
+//   4. Latch by setting bit 6 of REG_LED_CFG (read-modify-write to preserve count)
 #define PY32_REG_LED_CFG       0x24
 #define PY32_REG_LED_RAM_START 0x30
+#define PY32_REG_GPIO_DRV_L    0x13   // Drive mode low byte (0=push-pull, 1=open-drain)
+#define PY32_LED_DATA_PIN      13     // WS2812 data line on PY32 pin 13
+#define PY32_LED_COUNT_DEFAULT 12     // Stack-chan kit base = 12 WS2812C
 
 #define I2C_SCL_PIN         GPIO_NUM_11
 #define I2C_SDA_PIN         GPIO_NUM_12
@@ -294,8 +301,8 @@ void pipecat_servo_init(void) {
     ESP_LOGI(TAG, "Servo UART %d ready (TX=%d RX=%d %d bps)",
              SERVO_UART, SERVO_TX_PIN, SERVO_RX_PIN, SERVO_BAUDRATE);
 
-    // PY32 LED 初始化（套件标配 3 LED）
-    pipecat_py32_led_init(3);
+    // PY32 LED 初始化（套件 base 12 颗 WS2812C，pin 13 数据线）
+    pipecat_py32_led_init(0);  // 0 → use default 12
 
     // Small delay to let bus settle, then center to known good pose
     vTaskDelay(pdMS_TO_TICKS(100));
@@ -376,24 +383,40 @@ void pipecat_py32_led_init(uint8_t count) {
         ESP_LOGW(TAG, "LED init: py32_dev not ready (call pipecat_servo_init first)");
         return;
     }
+    if (count == 0) count = PY32_LED_COUNT_DEFAULT;
     if (count > 32) count = 32;
     s_led_count = count;
+
+    // Step 1: configure PY32 pin 13 as LED data line
+    //   Direction = output (set bit in REG_GPIO_M_L)
+    //   Pull-up = enabled (set bit in REG_GPIO_PU_L)
+    //   Drive mode = push-pull (CLEAR bit in REG_GPIO_DRV_L; 1=open-drain)
+    bool d = py32_set_bit(PY32_REG_GPIO_M_L, PY32_LED_DATA_PIN, true);
+    bool p = py32_set_bit(PY32_REG_GPIO_PU_L, PY32_LED_DATA_PIN, true);
+    bool dr = py32_set_bit(PY32_REG_GPIO_DRV_L, PY32_LED_DATA_PIN, false);
+    ESP_LOGI(TAG, "PY32 LED pin13 config: dir=%d pull=%d drive=%d", d, p, dr);
+
+    // Step 2: SetLedCount via REG_LED_CFG (also clears bit 6 = no latch yet)
     uint8_t buf[2] = {PY32_REG_LED_CFG, (uint8_t)(count & 0x3F)};
     esp_err_t err = i2c_master_transmit(py32_dev, buf, 2, 100);
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "PY32 LED count set to %d (write CFG=0x%02X OK)", count, count);
+        ESP_LOGI(TAG, "PY32 LED count set to %d", count);
     } else {
         ESP_LOGE(TAG, "PY32 LED setLedCount failed: %d", err);
     }
-    // Read back to verify
+    // Read back
     uint8_t reg = PY32_REG_LED_CFG;
     uint8_t cur = 0;
     err = i2c_master_transmit_receive(py32_dev, &reg, 1, &cur, 1, 100);
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "PY32 LED CFG read-back = 0x%02X", cur);
-    } else {
-        ESP_LOGW(TAG, "PY32 LED CFG read-back failed: %d", err);
     }
+
+    vTaskDelay(pdMS_TO_TICKS(20));  // settle
+
+    // Clear all LEDs to black initially (RAM + latch)
+    pipecat_py32_led_set_all(0, 0, 0);
+    pipecat_py32_led_refresh();
 }
 
 void pipecat_py32_led_set(uint8_t index, uint8_t r, uint8_t g, uint8_t b) {
