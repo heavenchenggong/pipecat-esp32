@@ -37,13 +37,21 @@
 #define CMD_WRITE           0x03
 #define ADDR_GOAL_POSITION  0x2A
 
-// PY32 I2C IO Expander (controls VM_EN on Stack-chan)
+// PY32 I2C IO Expander (controls VM_EN on Stack-chan + the RGB LEDs)
 #define PY32_ADDR           0x6F
 #define PY32_REG_GPIO_M_L   0x03  // Direction low byte (1 = output)
 #define PY32_REG_GPIO_O_L   0x05  // Output level low byte
 #define PY32_REG_GPIO_PU_L  0x09  // Pull-up low byte
 #define PY32_REG_GPIO_PD_L  0x0B  // Pull-down low byte
 #define PY32_VM_EN_PIN      0     // Pin 0 = servo power switch
+
+// LED registers (same PY32). LEDs are NOT GPIO-controlled SK6812; they're driven
+// by the PY32 chip itself, exposed via these registers (stackchan-arduino source):
+//   REG_LED_CFG = 0x24  bits[5:0] = count (max 32), bit 6 = refresh trigger
+//   REG_LED_RAM_START = 0x30  16 bytes per LED... no, 2 bytes per LED (RGB565 LE)
+// Stack-chan kit ships with 3 LEDs (cheek-L / cheek-R / center).
+#define PY32_REG_LED_CFG       0x24
+#define PY32_REG_LED_RAM_START 0x30
 
 #define I2C_SCL_PIN         GPIO_NUM_11
 #define I2C_SDA_PIN         GPIO_NUM_12
@@ -286,6 +294,9 @@ void pipecat_servo_init(void) {
     ESP_LOGI(TAG, "Servo UART %d ready (TX=%d RX=%d %d bps)",
              SERVO_UART, SERVO_TX_PIN, SERVO_RX_PIN, SERVO_BAUDRATE);
 
+    // PY32 LED 初始化（套件标配 3 LED）
+    pipecat_py32_led_init(3);
+
     // Small delay to let bus settle, then center to known good pose
     vTaskDelay(pdMS_TO_TICKS(100));
     pipecat_servo_center();
@@ -347,4 +358,71 @@ void pipecat_servo_shake(void) {
     vTaskDelay(pdMS_TO_TICKS(500));
     write_pos(SERVO_YAW_ID, neutral, 0, 400);
     vTaskDelay(pdMS_TO_TICKS(500));
+}
+
+// ── PY32 LED API (复用 servo.cpp 已经初始化好的 py32_dev I2C handle) ────────
+//
+// stackchan-arduino 源码确认：stack-chan 套件的 LED 不是 GPIO SK6812，而是 PY32
+// IO Expander 自带的 LED 驱动器 — 通过 I2C 写 REG_LED_CFG 设置数量、写
+// REG_LED_RAM_START 起的 RAM (每 LED 2 字节 RGB565 little-endian)，然后
+// 写 REG_LED_CFG bit 6 = 1 触发刷新。
+//
+// 套件出厂带 3 LEDs (cheek-L, cheek-R, optional center)，所以 default count=3。
+
+static uint8_t s_led_count = 0;
+
+void pipecat_py32_led_init(uint8_t count) {
+    if (!py32_dev) {
+        ESP_LOGW(TAG, "LED init: py32_dev not ready (call pipecat_servo_init first)");
+        return;
+    }
+    if (count > 32) count = 32;
+    s_led_count = count;
+    uint8_t buf[2] = {PY32_REG_LED_CFG, (uint8_t)(count & 0x3F)};
+    esp_err_t err = i2c_master_transmit(py32_dev, buf, 2, 100);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "PY32 LED count set to %d", count);
+    } else {
+        ESP_LOGE(TAG, "PY32 LED setLedCount failed: %d", err);
+    }
+}
+
+void pipecat_py32_led_set(uint8_t index, uint8_t r, uint8_t g, uint8_t b) {
+    if (!py32_dev || index >= 32) return;
+    // RGB888 → RGB565: RRRRRGGG_GGGBBBBB
+    uint16_t color565 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+    // 写 RAM: addr = REG_LED_RAM_START + index*2; 然后 LE 2 bytes
+    uint8_t buf[3] = {
+        (uint8_t)(PY32_REG_LED_RAM_START + index * 2),
+        (uint8_t)(color565 & 0xFF),
+        (uint8_t)((color565 >> 8) & 0xFF),
+    };
+    esp_err_t err = i2c_master_transmit(py32_dev, buf, 3, 100);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "PY32 LED[%d] set rgb(%d,%d,%d) failed: %d", index, r, g, b, err);
+    }
+}
+
+void pipecat_py32_led_set_all(uint8_t r, uint8_t g, uint8_t b) {
+    uint8_t n = s_led_count == 0 ? 3 : s_led_count;
+    for (uint8_t i = 0; i < n; i++) {
+        pipecat_py32_led_set(i, r, g, b);
+    }
+}
+
+void pipecat_py32_led_refresh(void) {
+    if (!py32_dev) return;
+    // Read REG_LED_CFG, set bit 6, write back to trigger refresh.
+    uint8_t reg = PY32_REG_LED_CFG;
+    uint8_t cur = 0;
+    esp_err_t err = i2c_master_transmit_receive(py32_dev, &reg, 1, &cur, 1, 100);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "LED refresh: read CFG failed: %d", err);
+        return;
+    }
+    uint8_t buf[2] = {PY32_REG_LED_CFG, (uint8_t)(cur | (1 << 6))};
+    err = i2c_master_transmit(py32_dev, buf, 2, 100);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "LED refresh: write CFG failed: %d", err);
+    }
 }
