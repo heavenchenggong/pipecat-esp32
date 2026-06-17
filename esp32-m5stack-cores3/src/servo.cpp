@@ -381,9 +381,18 @@ void pipecat_py32_led_init(uint8_t count) {
     uint8_t buf[2] = {PY32_REG_LED_CFG, (uint8_t)(count & 0x3F)};
     esp_err_t err = i2c_master_transmit(py32_dev, buf, 2, 100);
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "PY32 LED count set to %d", count);
+        ESP_LOGI(TAG, "PY32 LED count set to %d (write CFG=0x%02X OK)", count, count);
     } else {
         ESP_LOGE(TAG, "PY32 LED setLedCount failed: %d", err);
+    }
+    // Read back to verify
+    uint8_t reg = PY32_REG_LED_CFG;
+    uint8_t cur = 0;
+    err = i2c_master_transmit_receive(py32_dev, &reg, 1, &cur, 1, 100);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "PY32 LED CFG read-back = 0x%02X", cur);
+    } else {
+        ESP_LOGW(TAG, "PY32 LED CFG read-back failed: %d", err);
     }
 }
 
@@ -398,8 +407,10 @@ void pipecat_py32_led_set(uint8_t index, uint8_t r, uint8_t g, uint8_t b) {
         (uint8_t)((color565 >> 8) & 0xFF),
     };
     esp_err_t err = i2c_master_transmit(py32_dev, buf, 3, 100);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "PY32 LED[%d] set rgb(%d,%d,%d) failed: %d", index, r, g, b, err);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "LED[%d]=rgb(%d,%d,%d)=0x%04X OK", index, r, g, b, color565);
+    } else {
+        ESP_LOGW(TAG, "LED[%d] set rgb(%d,%d,%d) failed: %d", index, r, g, b, err);
     }
 }
 
@@ -422,7 +433,9 @@ void pipecat_py32_led_refresh(void) {
     }
     uint8_t buf[2] = {PY32_REG_LED_CFG, (uint8_t)(cur | (1 << 6))};
     err = i2c_master_transmit(py32_dev, buf, 2, 100);
-    if (err != ESP_OK) {
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "LED refresh OK (CFG was 0x%02X, wrote 0x%02X)", cur, cur | 0x40);
+    } else {
         ESP_LOGW(TAG, "LED refresh: write CFG failed: %d", err);
     }
 }
