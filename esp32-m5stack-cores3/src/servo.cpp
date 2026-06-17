@@ -105,21 +105,29 @@ static bool py32_write_reg(uint8_t reg, uint8_t value) {
     return false;
 }
 
-// Read-modify-write a single bit in a register (used for pin-level config)
+// Read-modify-write a single bit in a register (used for pin-level config).
+// PY32 寄存器是 16-bit 分两个字节: pin 0-7 在 reg_l, pin 8-15 在 reg_h (off+1)。
+// pin 13 必须写 reg+1 的 bit 5 (=13-8)。早期版本只写 reg_l 导致 pin 13 配置静默丢失。
 static bool py32_set_bit(uint8_t reg, uint8_t pin, bool level) {
     if (!py32_dev) return false;
+    if (pin >= 16) return false;  // PY32 has 16 GPIOs max
+
+    // Determine which byte register and bit within byte
+    uint8_t actual_reg = (pin < 8) ? reg : (uint8_t)(reg + 1);
+    uint8_t bit_idx    = (pin < 8) ? pin : (uint8_t)(pin - 8);
+
     uint8_t cur = 0;
-    esp_err_t err = i2c_master_transmit_receive(py32_dev, &reg, 1, &cur, 1, 100);
+    esp_err_t err = i2c_master_transmit_receive(py32_dev, &actual_reg, 1, &cur, 1, 100);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "py32 read reg 0x%02X failed: %d", reg, err);
+        ESP_LOGW(TAG, "py32 read reg 0x%02X failed: %d", actual_reg, err);
         return false;
     }
     if (level) {
-        cur |= (1 << pin);
+        cur |= (1 << bit_idx);
     } else {
-        cur &= ~(1 << pin);
+        cur &= ~(1 << bit_idx);
     }
-    return py32_write_reg(reg, cur);
+    return py32_write_reg(actual_reg, cur);
 }
 
 // Initialize PY32 IO Expander and turn on VM_EN to power the servos.
